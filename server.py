@@ -129,6 +129,7 @@ class ZImageService:
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 generator=generator,
+                offload_text_encoder=False,
             )
             elapsed = time.perf_counter() - started
 
