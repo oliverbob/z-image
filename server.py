@@ -117,6 +117,13 @@ class ZImageService:
             self._lazy_load()
             assert self._components is not None
 
+            text_encoder = self._components.get("text_encoder")
+            if text_encoder is not None:
+                text_encoder.to(self._device)
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             effective_seed = seed if seed is not None else int(time.time() * 1000) % 2_147_483_647
             generator = torch.Generator(self._device).manual_seed(effective_seed)
 
@@ -129,7 +136,7 @@ class ZImageService:
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 generator=generator,
-                offload_text_encoder=False,
+                offload_text_encoder=True,
             )
             elapsed = time.perf_counter() - started
 
