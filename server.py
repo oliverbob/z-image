@@ -75,6 +75,11 @@ def _build_prompt_from_ollama_messages(messages: list["OllamaMessage"]) -> str:
     return "\n".join(rendered).strip()
 
 
+def _is_cuda_oom(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "cuda out of memory" in message or "cudnn_status_alloc_failed" in message
+
+
 class ZImageService:
     def __init__(self) -> None:
         self._components: dict[str, Any] | None = None
@@ -104,8 +109,8 @@ class ZImageService:
     def generate_image_base64(
         self,
         prompt: str,
-        height: int = 1024,
-        width: int = 1024,
+        height: int = 512,
+        width: int = 512,
         num_inference_steps: int = 8,
         guidance_scale: float = 0.0,
         seed: int | None = None,
@@ -124,27 +129,54 @@ class ZImageService:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+            attempts = [
+                (height, width, num_inference_steps),
+                (min(height, 768), min(width, 768), min(num_inference_steps, 6)),
+                (512, 512, min(num_inference_steps, 4)),
+            ]
+
+            unique_attempts: list[tuple[int, int, int]] = []
+            for attempt in attempts:
+                if attempt not in unique_attempts:
+                    unique_attempts.append(attempt)
+
             effective_seed = seed if seed is not None else int(time.time() * 1000) % 2_147_483_647
-            generator = torch.Generator(self._device).manual_seed(effective_seed)
+            last_error: Exception | None = None
 
-            started = time.perf_counter()
-            images = generate(
-                prompt=prompt,
-                **self._components,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                generator=generator,
-                offload_text_encoder=True,
-            )
-            elapsed = time.perf_counter() - started
+            for try_height, try_width, try_steps in unique_attempts:
+                try:
+                    generator = torch.Generator(self._device).manual_seed(effective_seed)
 
-            image = images[0]
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
-            image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-            return image_b64, elapsed
+                    started = time.perf_counter()
+                    images = generate(
+                        prompt=prompt,
+                        **self._components,
+                        height=try_height,
+                        width=try_width,
+                        num_inference_steps=try_steps,
+                        guidance_scale=guidance_scale,
+                        generator=generator,
+                        offload_text_encoder=True,
+                    )
+                    elapsed = time.perf_counter() - started
+
+                    image = images[0]
+                    buffer = io.BytesIO()
+                    image.save(buffer, format="PNG")
+                    image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                    return image_b64, elapsed
+                except RuntimeError as exc:
+                    last_error = exc
+                    if not _is_cuda_oom(exc):
+                        raise
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    continue
+
+            if last_error is not None:
+                raise last_error
+
+            raise RuntimeError("Generation failed with unknown error.")
 
 
 class OpenAIChatMessage(BaseModel):
@@ -160,8 +192,8 @@ class OpenAIChatCompletionsRequest(BaseModel):
     stream: bool = False
     temperature: float | None = None
     max_tokens: int | None = None
-    height: int = 1024
-    width: int = 1024
+    height: int = 512
+    width: int = 512
     num_inference_steps: int = 8
     guidance_scale: float = 0.0
     seed: int | None = None
@@ -173,7 +205,7 @@ class OpenAIImageGenerationRequest(BaseModel):
     model: str = "Z-image-turbo"
     prompt: str
     n: int = 1
-    size: str = "1024x1024"
+    size: str = "512x512"
     response_format: Literal["b64_json", "url"] = "b64_json"
     num_inference_steps: int = 8
     guidance_scale: float = 0.0
@@ -337,8 +369,8 @@ def ollama_chat(body: OllamaChatRequest) -> dict[str, Any]:
     try:
         image_b64, elapsed = service.generate_image_base64(
             prompt=prompt,
-            height=int(options.get("height", 1024)),
-            width=int(options.get("width", 1024)),
+            height=int(options.get("height", 512)),
+            width=int(options.get("width", 512)),
             num_inference_steps=int(options.get("num_inference_steps", 8)),
             guidance_scale=float(options.get("guidance_scale", 0.0)),
             seed=options.get("seed"),
@@ -373,8 +405,8 @@ def ollama_generate(body: OllamaGenerateRequest) -> dict[str, Any]:
     try:
         image_b64, elapsed = service.generate_image_base64(
             prompt=body.prompt,
-            height=int(options.get("height", 1024)),
-            width=int(options.get("width", 1024)),
+            height=int(options.get("height", 512)),
+            width=int(options.get("width", 512)),
             num_inference_steps=int(options.get("num_inference_steps", 8)),
             guidance_scale=float(options.get("guidance_scale", 0.0)),
             seed=options.get("seed"),
