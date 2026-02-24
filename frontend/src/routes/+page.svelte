@@ -11,7 +11,7 @@
   let messageText = "";
   let loading = false;
   let error = "";
-  let drawerOpen = true;
+  let drawerOpen = false;
   let composerTextarea: HTMLTextAreaElement | null = null;
   let theme: "dark" | "light" = "dark";
   let messages: ChatMessage[] = [];
@@ -142,6 +142,8 @@
   }
 
   onMount(() => {
+    drawerOpen = window.matchMedia("(min-width: 1024px)").matches;
+
     const saved = localStorage.getItem("zimage-theme");
     if (saved === "dark" || saved === "light") {
       applyTheme(saved);
