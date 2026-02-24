@@ -66,6 +66,37 @@ RUN_PYTHON_BOOTSTRAP=0 ./run.sh
 
 These environment variables also work with `run.py`, `run.ps1`, and `run.bat`.
 
+## 🤝 Collaboration & Ministry Vision
+
+We are currently seeking **international Christian collaborators, ministries, and partners** for a multi-million peso proposal to build an **AI-generated illustrative online Bible software platform**.
+
+If your ministry, church, organization, or technical team is interested in collaboration, please reach out.
+
+Current illustration concept: **Adam and Eve depicted in the garden**.
+
+### Infrastructure Vision (Self-Hosted Cloud / Home Data Center)
+
+- Power baseline: **20KW**
+- Regional scaling hardware target: **NVIDIA HGX H100**
+- Cost categories:
+  - Building cost
+  - Regulatory compliance cost
+  - Labor cost
+  - Engineering cost (including senior engineers; some roles may require Master’s/PhD-level expertise)
+  - Data science and software development teams
+
+Estimated scaling budgets:
+
+- **Regional scaling:** PHP **5M–10M**
+- **National scaling:** PHP **100M–200M**, with **2MW solar + datacenter**
+- **International scaling:** PHP **500M–500B**, including long-term vision for **1GW solar + cloud-scale infrastructure**, and a Christian Metro Studio Complex for large-scale community compute and employment.
+
+### Ministry Backdrop Verse
+
+**Ephesians 1:22-23 (AMP)**
+
+"And He put all things [in every realm] in subjection under Christ’s feet, and appointed Him as [supreme and authoritative] head over all things in the church, which is His body, the fullness of Him who fills and completes all things in all [believers]."
+
 
 
 ## ✨ Z-Image
