@@ -78,11 +78,12 @@ Current illustration concept: **Adam and Eve depicted in the garden**.
   <tr>
     <td><img src="assets/garden1.png" alt="Garden 1" /></td>
     <td><img src="assets/garden2.png" alt="Garden 2" /></td>
+    <td><img src="assets/garden3.png" alt="Garden 3" /></td>
   </tr>
   <tr>
-    <td><img src="assets/garden3.png" alt="Garden 3" /></td>
     <td><img src="assets/garden4.png" alt="Garden 4" /></td>
     <td><img src="assets/garden5.png" alt="Garden 5" /></td>
+    <td><img src="assets/garden6.png" alt="Garden 6" /></td>
   </tr>
 </table>
 
