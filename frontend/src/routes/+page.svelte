@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
 
   type ChatMessage = {
     role: "user" | "assistant";
@@ -12,6 +12,7 @@
   let loading = false;
   let error = "";
   let drawerOpen = false;
+  let conversationScroller: HTMLDivElement | null = null;
   let composerTextarea: HTMLTextAreaElement | null = null;
   let theme: "dark" | "light" = "dark";
   let messages: ChatMessage[] = [];
@@ -87,6 +88,11 @@
           imageUrl: typeof data.imageUrl === "string" ? data.imageUrl : undefined,
         },
       ];
+
+      if (typeof data.imageUrl === "string") {
+        await tick();
+        scrollToLatestGeneratedImage();
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : "Chat failed";
     } finally {
@@ -139,6 +145,21 @@
 
   function toggleTheme() {
     applyTheme(theme === "dark" ? "light" : "dark");
+  }
+
+  function scrollToLatestGeneratedImage() {
+    if (!conversationScroller) {
+      return;
+    }
+
+    const generatedImages = conversationScroller.querySelectorAll<HTMLImageElement>('img[data-generated-image="true"]');
+    const latestGeneratedImage = generatedImages[generatedImages.length - 1];
+
+    latestGeneratedImage?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "nearest",
+    });
   }
 
   onMount(() => {
@@ -410,7 +431,7 @@
 
     <section class="light-mode-canvas flex min-h-0 flex-1 flex-col px-3 pb-4 pt-4 sm:px-6">
       <div class="mx-auto flex w-full max-w-4xl flex-1 flex-col">
-        <div class="flex-1 overflow-y-auto pb-6">
+        <div class="flex-1 overflow-y-auto pb-6" bind:this={conversationScroller}>
           {#if messages.length === 0}
             <div class="mx-auto mt-8 flex max-w-2xl flex-col items-center text-center sm:mt-10">
               <div
@@ -478,6 +499,7 @@
                       <img
                         src={msg.imageUrl}
                         alt="Generated result"
+                        data-generated-image="true"
                         class="mt-3 w-full rounded-xl border border-[#2a3557]"
                         loading="lazy"
                       />
