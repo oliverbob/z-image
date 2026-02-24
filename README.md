@@ -22,7 +22,7 @@ Welcome to the official repository for the Z-Image（造相）project!
 
 ## ⚡ How to Run (API + Frontend)
 
-Use the root startup script to create `.venv`, install dependencies, run checks/builds, and start both services.
+Use the root startup launcher to create `.venv`, install dependencies, run checks/builds, and start both services.
 
 Prerequisites:
 
@@ -32,9 +32,23 @@ Prerequisites:
 
 From repository root:
 
+Linux / macOS:
+
 ```bash
 chmod +x run.sh
 ./run.sh
+```
+
+Windows (PowerShell):
+
+```powershell
+.\run.ps1
+```
+
+Windows (CMD):
+
+```bat
+run.bat
 ```
 
 Default endpoints:
@@ -49,6 +63,8 @@ RUN_FRONTEND_BUILD=0 ./run.sh
 RUN_FRONTEND_CHECK=0 ./run.sh
 RUN_PYTHON_BOOTSTRAP=0 ./run.sh
 ```
+
+These environment variables also work with `run.py`, `run.ps1`, and `run.bat`.
 
 
 
