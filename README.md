@@ -20,6 +20,36 @@ Welcome to the official repository for the Z-Image（造相）project!
 
 </div>
 
+## ⚡ How to Run (API + Frontend)
+
+Use the root startup script to create `.venv`, install dependencies, run checks/builds, and start both services.
+
+Prerequisites:
+
+- Python 3.10+
+- Node.js 20+
+- npm
+
+From repository root:
+
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+Default endpoints:
+
+- Backend API: `http://localhost:9090`
+- Frontend UI: `http://localhost:4040`
+
+Useful toggles:
+
+```bash
+RUN_FRONTEND_BUILD=0 ./run.sh
+RUN_FRONTEND_CHECK=0 ./run.sh
+RUN_PYTHON_BOOTSTRAP=0 ./run.sh
+```
+
 
 
 ## ✨ Z-Image
