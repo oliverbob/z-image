@@ -88,6 +88,10 @@ def _sse_line(payload: dict[str, Any] | str) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _ndjson_line(payload: dict[str, Any]) -> str:
+    return f"{json.dumps(payload, ensure_ascii=False)}\n"
+
+
 def _openai_chat_stream_chunks(
     *,
     completion_id: str,
@@ -142,6 +146,74 @@ def _openai_chat_stream_chunks(
     }
     yield _sse_line(final_chunk)
     yield _sse_line("[DONE]")
+
+
+def _ollama_chat_stream_chunks(
+    *,
+    model: str,
+    created_at: str,
+    message_text: str,
+    image_b64: str,
+    elapsed: float,
+) -> Iterator[str]:
+    yield _ndjson_line(
+        {
+            "model": model,
+            "created_at": created_at,
+            "message": {
+                "role": "assistant",
+                "content": message_text,
+                "images": [image_b64],
+            },
+            "done": False,
+        }
+    )
+    yield _ndjson_line(
+        {
+            "model": model,
+            "created_at": created_at,
+            "message": {
+                "role": "assistant",
+                "content": "",
+            },
+            "done": True,
+            "done_reason": "stop",
+            "total_duration": int(elapsed * 1_000_000_000),
+            "eval_count": 0,
+            "eval_duration": int(elapsed * 1_000_000_000),
+        }
+    )
+
+
+def _ollama_generate_stream_chunks(
+    *,
+    model: str,
+    created_at: str,
+    response_text: str,
+    image_b64: str,
+    elapsed: float,
+) -> Iterator[str]:
+    yield _ndjson_line(
+        {
+            "model": model,
+            "created_at": created_at,
+            "response": response_text,
+            "images": [image_b64],
+            "done": False,
+        }
+    )
+    yield _ndjson_line(
+        {
+            "model": model,
+            "created_at": created_at,
+            "response": "",
+            "done": True,
+            "done_reason": "stop",
+            "total_duration": int(elapsed * 1_000_000_000),
+            "eval_count": 0,
+            "eval_duration": int(elapsed * 1_000_000_000),
+        }
+    )
 
 
 class ZImageService:
@@ -434,9 +506,7 @@ def openai_image_generations(body: OpenAIImageGenerationRequest) -> dict[str, An
 
 
 @app.post("/api/chat")
-def ollama_chat(body: OllamaChatRequest) -> dict[str, Any]:
-    if body.stream:
-        raise HTTPException(status_code=400, detail="Streaming is not supported yet.")
+def ollama_chat(body: OllamaChatRequest) -> dict[str, Any] | StreamingResponse:
 
     prompt = _build_prompt_from_ollama_messages(body.messages)
     if not prompt:
@@ -458,12 +528,31 @@ def ollama_chat(body: OllamaChatRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
 
     created_at = datetime.now(timezone.utc).isoformat()
+    message_text = f"Generated image with Z-image-turbo in {elapsed:.2f}s."
+
+    if body.stream:
+        return StreamingResponse(
+            _ollama_chat_stream_chunks(
+                model=body.model,
+                created_at=created_at,
+                message_text=message_text,
+                image_b64=image_b64,
+                elapsed=elapsed,
+            ),
+            media_type="application/x-ndjson",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     return {
         "model": body.model,
         "created_at": created_at,
         "message": {
             "role": "assistant",
-            "content": f"Generated image with Z-image-turbo in {elapsed:.2f}s.",
+            "content": message_text,
             "images": [image_b64],
         },
         "done": True,
@@ -474,9 +563,7 @@ def ollama_chat(body: OllamaChatRequest) -> dict[str, Any]:
 
 
 @app.post("/api/generate")
-def ollama_generate(body: OllamaGenerateRequest) -> dict[str, Any]:
-    if body.stream:
-        raise HTTPException(status_code=400, detail="Streaming is not supported yet.")
+def ollama_generate(body: OllamaGenerateRequest) -> dict[str, Any] | StreamingResponse:
 
     options = body.options or {}
     try:
@@ -494,10 +581,29 @@ def ollama_generate(body: OllamaGenerateRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
 
     created_at = datetime.now(timezone.utc).isoformat()
+    response_text = f"Generated image with Z-image-turbo in {elapsed:.2f}s."
+
+    if body.stream:
+        return StreamingResponse(
+            _ollama_generate_stream_chunks(
+                model=body.model,
+                created_at=created_at,
+                response_text=response_text,
+                image_b64=image_b64,
+                elapsed=elapsed,
+            ),
+            media_type="application/x-ndjson",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     return {
         "model": body.model,
         "created_at": created_at,
-        "response": f"Generated image with Z-image-turbo in {elapsed:.2f}s.",
+        "response": response_text,
         "images": [image_b64],
         "done": True,
         "total_duration": int(elapsed * 1_000_000_000),

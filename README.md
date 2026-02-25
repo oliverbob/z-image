@@ -456,6 +456,30 @@ curl http://localhost:9090/api/chat \
   }'
 ```
 
+### Ollama-like streaming example
+
+`POST /api/chat` and `POST /api/generate` support streaming when `"stream": true`.
+Responses are newline-delimited JSON (NDJSON), compatible with Ollama-style stream readers.
+
+```bash
+curl http://localhost:9090/api/chat \
+  -H 'content-type: application/json' \
+  -N \
+  -d '{
+    "model": "Z-image-turbo",
+    "stream": true,
+    "messages": [
+      {"role": "user", "content": "A watercolor-style mountain village at sunrise"}
+    ],
+    "options": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 8,
+      "guidance_scale": 0.0
+    }
+  }'
+```
+
 The server returns generated image data in base64 for `POST /v1/images/generations` and for Ollama-like endpoints.
 `POST /v1/chat/completions` now returns OpenAI-compatible text content shape.
 
