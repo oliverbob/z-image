@@ -5,13 +5,15 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timezone
 import io
+import json
 import os
 import threading
 import time
 import uuid
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 import torch
 
@@ -80,6 +82,80 @@ def _is_cuda_oom(exc: Exception) -> bool:
     return "cuda out of memory" in message or "cudnn_status_alloc_failed" in message
 
 
+def _sse_line(payload: dict[str, Any] | str) -> str:
+    if isinstance(payload, str):
+        return f"data: {payload}\n\n"
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _openai_chat_stream_chunks(
+    *,
+    completion_id: str,
+    created: int,
+    model: str,
+    image_b64: str,
+    elapsed: float,
+) -> Iterator[str]:
+    role_chunk = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"role": "assistant"},
+                "finish_reason": None,
+            }
+        ],
+    }
+    yield _sse_line(role_chunk)
+
+    content_chunk = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Generated image with Z-image-turbo in {elapsed:.2f}s.",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{image_b64}",
+                            },
+                        },
+                    ]
+                },
+                "finish_reason": None,
+            }
+        ],
+    }
+    yield _sse_line(content_chunk)
+
+    final_chunk = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop",
+            }
+        ],
+    }
+    yield _sse_line(final_chunk)
+    yield _sse_line("[DONE]")
+
+
 class ZImageService:
     def __init__(self) -> None:
         self._components: dict[str, Any] | None = None
@@ -89,6 +165,9 @@ class ZImageService:
         self._attn_backend = os.environ.get("ZIMAGE_ATTENTION", "_native_flash")
         self._model_path = os.environ.get("ZIMAGE_MODEL_PATH", "ckpts/Z-Image-Turbo")
         self._repo_id = os.environ.get("ZIMAGE_REPO_ID", "Tongyi-MAI/Z-Image-Turbo")
+        self._park_text_encoder_on_cpu = os.environ.get("ZIMAGE_PARK_TEXT_ENCODER_ON_CPU", "0") == "1"
+        self._offload_text_encoder = os.environ.get("ZIMAGE_OFFLOAD_TEXT_ENCODER", "0") == "1"
+        self._clear_cuda_cache_per_request = os.environ.get("ZIMAGE_CLEAR_CUDA_CACHE_PER_REQUEST", "0") == "1"
         self._lock = threading.Lock()
 
     def _lazy_load(self) -> None:
@@ -106,7 +185,7 @@ class ZImageService:
         set_attention_backend(self._attn_backend)
 
         text_encoder = components.get("text_encoder")
-        if text_encoder is not None and torch.cuda.is_available():
+        if self._park_text_encoder_on_cpu and text_encoder is not None and torch.cuda.is_available():
             text_encoder.to("cpu")
             torch.cuda.empty_cache()
 
@@ -129,10 +208,10 @@ class ZImageService:
             assert self._components is not None
 
             text_encoder = self._components.get("text_encoder")
-            if text_encoder is not None:
+            if text_encoder is not None and self._park_text_encoder_on_cpu:
                 text_encoder.to(self._device)
 
-            if torch.cuda.is_available():
+            if self._clear_cuda_cache_per_request and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             attempts = [
@@ -162,7 +241,7 @@ class ZImageService:
                         num_inference_steps=try_steps,
                         guidance_scale=guidance_scale,
                         generator=generator,
-                        offload_text_encoder=True,
+                        offload_text_encoder=self._offload_text_encoder,
                     )
                     elapsed = time.perf_counter() - started
 
@@ -267,9 +346,7 @@ def list_models() -> dict[str, Any]:
 
 
 @app.post("/v1/chat/completions")
-def openai_chat_completions(body: OpenAIChatCompletionsRequest) -> dict[str, Any]:
-    if body.stream:
-        raise HTTPException(status_code=400, detail="Streaming is not supported yet.")
+def openai_chat_completions(body: OpenAIChatCompletionsRequest) -> dict[str, Any] | StreamingResponse:
 
     prompt = _build_prompt_from_openai_messages(body.messages)
     if not prompt:
@@ -289,11 +366,30 @@ def openai_chat_completions(body: OpenAIChatCompletionsRequest) -> dict[str, Any
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
 
-    data_url = f"data:image/png;base64,{image_b64}"
     created = int(time.time())
+    completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+
+    if body.stream:
+        return StreamingResponse(
+            _openai_chat_stream_chunks(
+                completion_id=completion_id,
+                created=created,
+                model=body.model,
+                image_b64=image_b64,
+                elapsed=elapsed,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    data_url = f"data:image/png;base64,{image_b64}"
 
     return {
-        "id": f"chatcmpl-{uuid.uuid4().hex}",
+        "id": completion_id,
         "object": "chat.completion",
         "created": created,
         "model": body.model,

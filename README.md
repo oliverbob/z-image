@@ -383,6 +383,22 @@ python server.py
 
 By default, it listens on `http://0.0.0.0:9090`.
 
+### Performance tuning (GPU)
+
+For high-VRAM GPUs (for example RTX 4090), keep text encoder on GPU for lower latency:
+
+- `ZIMAGE_PARK_TEXT_ENCODER_ON_CPU=0` (default)
+- `ZIMAGE_OFFLOAD_TEXT_ENCODER=0` (default)
+- `ZIMAGE_CLEAR_CUDA_CACHE_PER_REQUEST=0` (default)
+
+For low-VRAM/OOM-prone setups, enable safer mode:
+
+- `ZIMAGE_PARK_TEXT_ENCODER_ON_CPU=1`
+- `ZIMAGE_OFFLOAD_TEXT_ENCODER=1`
+- `ZIMAGE_CLEAR_CUDA_CACHE_PER_REQUEST=1`
+
+Optional speed-up: `ZIMAGE_COMPILE=1` (first request is slower due to compile warm-up).
+
 ### OpenAI-style example
 
 ```bash
@@ -393,6 +409,27 @@ curl http://localhost:9090/v1/chat/completions \
     "messages": [
       {"role": "user", "content": "A cinematic night street scene with neon reflections"}
     ],
+    "height": 1024,
+    "width": 1024,
+    "num_inference_steps": 8,
+    "guidance_scale": 0.0
+  }'
+```
+
+### OpenAI-style streaming example
+
+`POST /v1/chat/completions` supports SSE when `"stream": true`.
+
+```bash
+curl http://localhost:9090/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -N \
+  -d '{
+    "model": "Z-image-turbo",
+    "messages": [
+      {"role": "user", "content": "A cinematic night street scene with neon reflections"}
+    ],
+    "stream": true,
     "height": 1024,
     "width": 1024,
     "num_inference_steps": 8,
