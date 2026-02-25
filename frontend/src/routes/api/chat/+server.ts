@@ -21,20 +21,41 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       return json({ error: "Message is required" }, { status: 400 });
     }
 
-    const configuredModelChatUrl = env.MODEL_CHAT_URL?.trim() || "http://127.0.0.1:9090/v1/chat/completions";
-    let modelChatUrl = "http://127.0.0.1:9090/v1/chat/completions";
+    const configuredModelChatUrl = env.MODEL_CHAT_URL?.trim();
+    if (!configuredModelChatUrl) {
+      return json({ reply: `Echo: ${message}` });
+    }
+
+    const normalizedRawUrl = /^(https?:)?\/\//i.test(configuredModelChatUrl)
+      ? configuredModelChatUrl
+      : `http://${configuredModelChatUrl}`;
+
+    let modelChatUrl: string;
     try {
-      const configuredUrl = new URL(configuredModelChatUrl);
+      const configuredUrl = new URL(normalizedRawUrl);
       const upstreamPath = configuredUrl.pathname.includes("/api/chat")
         ? "/api/chat"
         : "/v1/chat/completions";
       const protocol = configuredUrl.protocol || "http:";
-      const host = configuredUrl.hostname || "127.0.0.1";
+      const host = configuredUrl.hostname;
+      if (!host) {
+        return json(
+          {
+            error: "MODEL_CHAT_URL must include a valid host",
+            target: configuredModelChatUrl,
+          },
+          { status: 500 },
+        );
+      }
       modelChatUrl = `${protocol}//${host}:9090${upstreamPath}`;
     } catch {
-      modelChatUrl = configuredModelChatUrl.includes("/api/chat")
-        ? "http://127.0.0.1:9090/api/chat"
-        : "http://127.0.0.1:9090/v1/chat/completions";
+      return json(
+        {
+          error: "Invalid MODEL_CHAT_URL",
+          target: configuredModelChatUrl,
+        },
+        { status: 500 },
+      );
     }
     const modelName = env.MODEL_NAME?.trim() || "Z-image-turbo";
     const defaultHeight = Number(env.ZIMAGE_HEIGHT ?? "512");
@@ -122,7 +143,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         ? data.reply
         : typeof data?.choices?.[0]?.message?.content === "string"
           ? data.choices[0].message.content
-        : typeof data?.message?.content === "string"
+          : typeof data?.message?.content === "string"
           ? data.message.content
           : typeof data?.response === "string"
             ? data.response
