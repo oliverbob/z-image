@@ -97,7 +97,7 @@ def _openai_chat_stream_chunks(
     completion_id: str,
     created: int,
     model: str,
-    message_text: str,
+    content_blocks: list[dict[str, Any]],
 ) -> Iterator[str]:
     role_chunk = {
         "id": completion_id,
@@ -114,22 +114,20 @@ def _openai_chat_stream_chunks(
     }
     yield _sse_line(role_chunk)
 
-    chunk_size = 64
-    for index in range(0, len(message_text), chunk_size):
-        content_chunk = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": message_text[index : index + chunk_size]},
-                    "finish_reason": None,
-                }
-            ],
-        }
-        yield _sse_line(content_chunk)
+    content_chunk = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"content": content_blocks},
+                "finish_reason": None,
+            }
+        ],
+    }
+    yield _sse_line(content_chunk)
 
     final_chunk = {
         "id": completion_id,
@@ -429,6 +427,19 @@ def openai_chat_completions(body: OpenAIChatCompletionsRequest) -> dict[str, Any
     created = int(time.time())
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     message_text = f"Generated image with Z-image-turbo in {elapsed:.2f}s."
+    data_url = f"data:image/png;base64,{image_b64}"
+    content_blocks = [
+        {
+            "type": "text",
+            "text": message_text,
+        },
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": data_url,
+            },
+        },
+    ]
 
     if body.stream:
         return StreamingResponse(
@@ -436,7 +447,7 @@ def openai_chat_completions(body: OpenAIChatCompletionsRequest) -> dict[str, Any
                 completion_id=completion_id,
                 created=created,
                 model=body.model,
-                message_text=message_text,
+                content_blocks=content_blocks,
             ),
             media_type="text/event-stream",
             headers={
@@ -457,7 +468,7 @@ def openai_chat_completions(body: OpenAIChatCompletionsRequest) -> dict[str, Any
                 "finish_reason": "stop",
                 "message": {
                     "role": "assistant",
-                    "content": message_text,
+                    "content": content_blocks,
                 },
             }
         ],

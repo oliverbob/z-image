@@ -140,11 +140,35 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     }
 
     const data = await upstream.json();
+
+    const openaiContent = data?.choices?.[0]?.message?.content;
+    const openaiTextFromBlocks = Array.isArray(openaiContent)
+      ? openaiContent
+          .filter((item: unknown) => {
+            return typeof item === "object" && item !== null && (item as { type?: unknown }).type === "text";
+          })
+          .map((item: { text?: unknown }) => (typeof item.text === "string" ? item.text : ""))
+          .filter((part: string) => part.length > 0)
+          .join("\n")
+      : null;
+
+    const openaiImageUrlFromBlocks = Array.isArray(openaiContent)
+      ? openaiContent.find((item: unknown) => {
+          if (typeof item !== "object" || item === null) {
+            return false;
+          }
+          const imageUrl = (item as { image_url?: { url?: unknown } }).image_url;
+          return typeof imageUrl?.url === "string";
+        })
+      : null;
+
     const reply =
       typeof data?.reply === "string"
         ? data.reply
         : typeof data?.choices?.[0]?.message?.content === "string"
           ? data.choices[0].message.content
+          : typeof openaiTextFromBlocks === "string" && openaiTextFromBlocks.length > 0
+            ? openaiTextFromBlocks
           : typeof data?.message?.content === "string"
           ? data.message.content
           : typeof data?.response === "string"
@@ -158,10 +182,17 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
           ? data.images[0]
           : null;
 
+    const imageUrlFromOpenAIBlocks =
+      openaiImageUrlFromBlocks && typeof (openaiImageUrlFromBlocks as { image_url?: { url?: unknown } }).image_url?.url === "string"
+        ? ((openaiImageUrlFromBlocks as { image_url: { url: string } }).image_url.url as string)
+        : null;
+
     const imageUrl = imageBase64
       ? imageBase64.startsWith("data:image")
         ? imageBase64
         : `data:image/png;base64,${imageBase64}`
+      : typeof imageUrlFromOpenAIBlocks === "string"
+        ? imageUrlFromOpenAIBlocks
       : null;
 
     return json({ reply, imageUrl });
