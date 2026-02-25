@@ -369,6 +369,7 @@ You can run a Python server for `Z-image-turbo` that exposes:
 - OpenAI-style:
   - `POST /v1/chat/completions`
   - `POST /v1/images/generations`
+  - `POST /v1/images/edits`
   - `GET /v1/models`
 - Ollama-like:
   - `POST /api/chat`
@@ -526,13 +527,21 @@ curl http://localhost:9090/api/chat \
 
 The server returns generated image data in base64 for Ollama-like endpoints.
 `POST /v1/chat/completions` returns OpenAI-compatible `message.content` / `delta.content` structures.
-`POST /v1/images/generations` supports `response_format: "b64_json"` or `"url"`.
+`POST /v1/images/generations` supports `response_format: "b64_json"` or `"url"`, and supports `n >= 1`.
+`POST /v1/images/edits` is available as a multipart OpenAI-compatible endpoint (`image` required, `mask` optional).
 
-Error contract for API routes is JSON with at least one of:
+Error contract for OpenAI routes (`/v1/*`) uses OpenAI-compatible envelope:
 
-- `detail`
-- `message`
-- `error.message`
+```json
+{
+  "error": {
+    "message": "Invalid model",
+    "type": "invalid_request_error",
+    "param": "model",
+    "code": "model_not_found"
+  }
+}
+```
 
 ## 🚀 Star History
 

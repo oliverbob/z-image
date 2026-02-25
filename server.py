@@ -13,7 +13,7 @@ import time
 import uuid
 from typing import Any, Iterator, Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -98,6 +98,53 @@ def _build_final_html(message_text: str, image_url: str) -> str:
     safe_text = html.escape(message_text)
     safe_url = html.escape(image_url, quote=True)
     return f"<p>{safe_text}</p><div class=\"mt-4\"><img src=\"{safe_url}\"></div>"
+
+
+def _public_base_url(request: Request) -> str:
+    configured = os.environ.get("OPENAI_PUBLIC_BASE_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+
+    forwarded_host = request.headers.get("x-forwarded-host", "").strip()
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").strip() or "https"
+    if forwarded_host:
+        return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
+    host = request.headers.get("host", "").strip()
+    if host:
+        return f"https://{host}".rstrip("/")
+
+    return str(request.base_url).rstrip("/")
+
+
+def _openai_error_body(
+    *,
+    message: str,
+    error_type: str = "invalid_request_error",
+    param: str | None = None,
+    code: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "error": {
+            "message": message,
+            "type": error_type,
+            "param": param,
+            "code": code,
+        }
+    }
+
+
+def _extract_error_message(detail: Any) -> str:
+    if isinstance(detail, str):
+        return detail
+    if isinstance(detail, dict):
+        message = detail.get("message")
+        if isinstance(message, str):
+            return message
+        return json.dumps(detail, ensure_ascii=False)
+    if isinstance(detail, list):
+        return json.dumps(detail, ensure_ascii=False)
+    return "Request failed"
 
 
 def _openai_chat_stream_chunks(
@@ -399,7 +446,7 @@ class OpenAIChatCompletionsRequest(BaseModel):
     guidance_scale: float = 0.0
     seed: int | None = None
     include_admin_log: bool = False
-    include_final_event: bool = True
+    include_final_event: bool = False
 
 
 class OpenAIImageGenerationRequest(BaseModel):
@@ -410,6 +457,10 @@ class OpenAIImageGenerationRequest(BaseModel):
     n: int = 1
     size: str = "512x512"
     response_format: Literal["b64_json", "url"] = "b64_json"
+    background: str | None = None
+    quality: str | None = None
+    style: str | None = None
+    user: str | None = None
     num_inference_steps: int = 8
     guidance_scale: float = 0.0
     seed: int | None = None
@@ -445,19 +496,42 @@ service = ZImageService()
 
 
 @app.exception_handler(HTTPException)
-def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     detail = exc.detail if exc.detail is not None else "Request failed"
+    if request.url.path.startswith("/v1/"):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_openai_error_body(message=_extract_error_message(detail)),
+        )
     return JSONResponse(status_code=exc.status_code, content={"detail": detail})
 
 
 @app.exception_handler(RequestValidationError)
-def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    if request.url.path.startswith("/v1/"):
+        return JSONResponse(
+            status_code=422,
+            content=_openai_error_body(
+                message=_extract_error_message(exc.errors()),
+                error_type="invalid_request_error",
+            ),
+        )
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 @app.exception_handler(Exception)
-def unhandled_exception_handler(_: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(status_code=500, content={"message": f"Internal server error: {exc}"})
+def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    message = f"Internal server error: {exc}"
+    if request.url.path.startswith("/v1/"):
+        return JSONResponse(
+            status_code=500,
+            content=_openai_error_body(
+                message=message,
+                error_type="server_error",
+                code="internal_error",
+            ),
+        )
+    return JSONResponse(status_code=500, content={"message": message})
 
 
 @app.get("/health")
@@ -512,7 +586,7 @@ def openai_chat_completions(request: Request, body: OpenAIChatCompletionsRequest
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     message_text = f"Generated image with Z-image-turbo in {elapsed:.2f}s."
     image_id = service.cache_image_base64(image_b64)
-    image_url = f"{str(request.base_url).rstrip('/')}/v1/images/{image_id}"
+    image_url = f"{_public_base_url(request)}/v1/images/{image_id}"
     text_block = {
         "type": "text",
         "text": message_text,
@@ -569,47 +643,122 @@ def openai_chat_completions(request: Request, body: OpenAIChatCompletionsRequest
             "completion_tokens": 0,
             "total_tokens": 0,
         },
-        "provider": "zimage_server",
-        "html": _build_final_html(message_text, image_url),
-        "raw_content": message_text,
+    }
+
+
+def _parse_image_size(size: str) -> tuple[int, int]:
+    try:
+        width, height = (int(value) for value in size.lower().split("x", maxsplit=1))
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="size must be formatted as WIDTHxHEIGHT, e.g. 1024x1024.")
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=400, detail="size values must be positive integers.")
+    return width, height
+
+
+def _generate_images(
+    *,
+    request: Request,
+    prompt: str,
+    n: int,
+    size: str,
+    response_format: Literal["b64_json", "url"],
+    num_inference_steps: int,
+    guidance_scale: float,
+    seed: int | None,
+) -> dict[str, Any]:
+    if n < 1:
+        raise HTTPException(status_code=400, detail="n must be >= 1.")
+
+    width, height = _parse_image_size(size)
+
+    images: list[dict[str, str]] = []
+    for index in range(n):
+        current_seed = seed + index if seed is not None else None
+        try:
+            image_b64, _ = service.generate_image_base64(
+                prompt=prompt,
+                height=height,
+                width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                seed=current_seed,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
+
+        if response_format == "url":
+            image_id = service.cache_image_base64(image_b64)
+            images.append({"url": f"{_public_base_url(request)}/v1/images/{image_id}"})
+        else:
+            images.append({"b64_json": image_b64})
+
+    return {
+        "created": int(time.time()),
+        "data": images,
     }
 
 
 @app.post("/v1/images/generations")
+@app.post("/v1/images/generations/")
+@app.post("/images/generations")
+@app.post("/images/generations/")
 def openai_image_generations(request: Request, body: OpenAIImageGenerationRequest) -> dict[str, Any]:
-    if body.n != 1:
-        raise HTTPException(status_code=400, detail="Only n=1 is supported.")
+    return _generate_images(
+        request=request,
+        prompt=body.prompt,
+        n=body.n,
+        size=body.size,
+        response_format=body.response_format,
+        num_inference_steps=body.num_inference_steps,
+        guidance_scale=body.guidance_scale,
+        seed=body.seed,
+    )
 
-    try:
-        width, height = (int(value) for value in body.size.lower().split("x", maxsplit=1))
-    except (ValueError, AttributeError):
-        raise HTTPException(status_code=400, detail="size must be formatted as WIDTHxHEIGHT, e.g. 1024x1024.")
 
-    try:
-        image_b64, _ = service.generate_image_base64(
-            prompt=body.prompt,
-            height=height,
-            width=width,
-            num_inference_steps=body.num_inference_steps,
-            guidance_scale=body.guidance_scale,
-            seed=body.seed,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
+@app.post("/v1/images/edits")
+@app.post("/v1/images/edits/")
+@app.post("/images/edits")
+@app.post("/images/edits/")
+async def openai_image_edits(
+    request: Request,
+    model: str = Form("Z-image-turbo"),
+    prompt: str = Form(...),
+    image: UploadFile = File(...),
+    mask: UploadFile | None = File(None),
+    n: int = Form(1),
+    size: str = Form("512x512"),
+    response_format: Literal["b64_json", "url"] = Form("b64_json"),
+    background: str | None = Form(None),
+    quality: str | None = Form(None),
+    style: str | None = Form(None),
+    user: str | None = Form(None),
+    num_inference_steps: int = Form(8),
+    guidance_scale: float = Form(0.0),
+    seed: int | None = Form(None),
+) -> dict[str, Any]:
+    _ = model
+    _ = mask
+    _ = background
+    _ = quality
+    _ = style
+    _ = user
 
-    if body.response_format == "url":
-        image_id = service.cache_image_base64(image_b64)
-        return {
-            "created": int(time.time()),
-            "data": [{"url": f"{str(request.base_url).rstrip('/')}/v1/images/{image_id}"}],
-        }
+    if not image.filename:
+        raise HTTPException(status_code=400, detail="image file is required.")
 
-    return {
-        "created": int(time.time()),
-        "data": [{"b64_json": image_b64}],
-    }
+    return _generate_images(
+        request=request,
+        prompt=prompt,
+        n=n,
+        size=size,
+        response_format=response_format,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        seed=seed,
+    )
 
 
 @app.post("/api/chat", response_model=None)
