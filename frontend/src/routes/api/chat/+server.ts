@@ -22,6 +22,17 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     }
 
     const configuredModelChatUrl = env.MODEL_CHAT_URL?.trim();
+
+    const gracefulBackendReply = (reason?: string, target?: string) => {
+      const suffix = reason ? ` (${reason})` : "";
+      const targetHint = target ? `\nTarget: ${target}` : "";
+      return json({
+        reply:
+          `Backend is temporarily unavailable.${suffix}\nPlease ensure your model API server is reachable on port 9090 and try again.${targetHint}`,
+        imageUrl: null,
+      });
+    };
+
     if (!configuredModelChatUrl) {
       return json({ reply: `Echo: ${message}` });
     }
@@ -39,23 +50,11 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       const protocol = configuredUrl.protocol || "http:";
       const host = configuredUrl.hostname;
       if (!host) {
-        return json(
-          {
-            error: "MODEL_CHAT_URL must include a valid host",
-            target: configuredModelChatUrl,
-          },
-          { status: 500 },
-        );
+        return gracefulBackendReply("MODEL_CHAT_URL must include a valid host", configuredModelChatUrl);
       }
       modelChatUrl = `${protocol}//${host}:9090${upstreamPath}`;
     } catch {
-      return json(
-        {
-          error: "Invalid MODEL_CHAT_URL",
-          target: configuredModelChatUrl,
-        },
-        { status: 500 },
-      );
+      return gracefulBackendReply("Invalid MODEL_CHAT_URL", configuredModelChatUrl);
     }
     const modelName = env.MODEL_NAME?.trim() || "Z-image-turbo";
     const defaultHeight = Number(env.ZIMAGE_HEIGHT ?? "512");
@@ -116,25 +115,28 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return json(
-        {
-          error: "Model backend is unreachable",
-          target: modelChatUrl,
-          details: errorMessage,
-        },
-        { status: 502 },
-      );
+      return gracefulBackendReply(errorMessage, modelChatUrl);
     }
 
     if (!upstream.ok) {
-      const errorText = await upstream.text();
-      return json(
-        {
-          error: errorText || `Upstream error: ${upstream.status}`,
-          target: modelChatUrl,
-        },
-        { status: 502 },
-      );
+      let upstreamMessage = `Upstream error: ${upstream.status}`;
+      try {
+        const errorJson = await upstream.json();
+        if (typeof errorJson?.detail === "string") {
+          upstreamMessage = errorJson.detail;
+        } else if (typeof errorJson?.error?.message === "string") {
+          upstreamMessage = errorJson.error.message;
+        } else {
+          upstreamMessage = JSON.stringify(errorJson);
+        }
+      } catch {
+        const errorText = await upstream.text();
+        if (errorText.trim()) {
+          upstreamMessage = errorText;
+        }
+      }
+
+      return gracefulBackendReply(upstreamMessage, modelChatUrl);
     }
 
     const data = await upstream.json();
