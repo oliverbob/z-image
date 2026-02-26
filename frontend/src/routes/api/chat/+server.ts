@@ -83,7 +83,13 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       if (!host) {
         return gracefulBackendReply("MODEL_CHAT_URL must include a valid host", configuredModelChatUrl);
       }
-      const baseUrl = `${protocol}//${host}:9090`;
+      const isLoopbackHost = host === "localhost" || host === "127.0.0.1";
+      const hasExplicitPort = configuredUrl.port.length > 0;
+      const baseUrl = hasExplicitPort
+        ? `${protocol}//${host}:${configuredUrl.port}`
+        : isLoopbackHost
+          ? `${protocol}//${host}:9090`
+          : `${protocol}//${host}`;
       modelChatUrl = `${baseUrl}${upstreamPath}`;
       modelImageEditUrl = `${baseUrl}/v1/images/edits`;
     } catch {
