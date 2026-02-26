@@ -20,6 +20,10 @@
   let messages: ChatMessage[] = [];
   let selectedImageFile: File | null = null;
   let selectedImagePreview = "";
+  let hasMounted = false;
+
+  const conversationStorageKey = "zimage-conversation-v1";
+  const maxPersistedMessages = 80;
 
   const suggestions = [
     { label: "Latest AI news", icon: "🔎", variant: "news" },
@@ -65,6 +69,8 @@
     } as const;
 
     messages = [...messages, nextUserMessage];
+    await tick();
+    scrollConversationToBottom();
     messageText = "";
     clearSelectedImage();
     resetComposerHeight();
@@ -110,6 +116,9 @@
           imageUrl: typeof data.imageUrl === "string" ? data.imageUrl : undefined,
         },
       ];
+
+      await tick();
+      scrollConversationToBottom();
 
       if (typeof data.imageUrl === "string") {
         await tick();
@@ -221,8 +230,89 @@
     });
   }
 
+  function scrollConversationToBottom() {
+    if (!conversationScroller) {
+      return;
+    }
+
+    conversationScroller.scrollTo({
+      top: conversationScroller.scrollHeight,
+      behavior: "smooth",
+    });
+  }
+
+  function sanitizeMessagesForStorage(input: ChatMessage[]): ChatMessage[] {
+    return input
+      .slice(-maxPersistedMessages)
+      .map((msg) => ({
+        role: msg.role,
+        content: msg.content,
+        createdAt: msg.createdAt,
+        imageUrl: msg.imageUrl,
+        attachmentName: msg.attachmentName,
+      }));
+  }
+
+  function persistConversation(input: ChatMessage[]) {
+    const sanitized = sanitizeMessagesForStorage(input);
+    for (let count = sanitized.length; count >= 0; count -= 1) {
+      const nextSlice = sanitized.slice(-count);
+      try {
+        localStorage.setItem(conversationStorageKey, JSON.stringify(nextSlice));
+        return;
+      } catch {
+        continue;
+      }
+    }
+
+    try {
+      localStorage.removeItem(conversationStorageKey);
+    } catch {
+      // no-op
+    }
+  }
+
+  function loadPersistedConversation(): ChatMessage[] {
+    try {
+      const raw = localStorage.getItem(conversationStorageKey);
+      if (!raw) {
+        return [];
+      }
+
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+
+      return parsed
+        .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
+        .map((entry) => {
+          const role: ChatMessage["role"] = entry.role === "assistant" ? "assistant" : "user";
+          const content = typeof entry.content === "string" ? entry.content : "";
+          const createdAt = typeof entry.createdAt === "number" ? entry.createdAt : Date.now();
+          const imageUrl = typeof entry.imageUrl === "string" ? entry.imageUrl : undefined;
+          const attachmentName = typeof entry.attachmentName === "string" ? entry.attachmentName : undefined;
+          return { role, content, createdAt, imageUrl, attachmentName };
+        })
+        .filter((msg) => msg.content.length > 0 || typeof msg.imageUrl === "string")
+        .slice(-maxPersistedMessages);
+    } catch {
+      return [];
+    }
+  }
+
+  $: if (hasMounted) {
+    persistConversation(messages);
+  }
+
   onMount(() => {
     drawerOpen = window.matchMedia("(min-width: 1024px)").matches;
+
+    messages = loadPersistedConversation();
+    hasMounted = true;
+    if (messages.length > 0) {
+      void tick().then(() => scrollConversationToBottom());
+    }
 
     const saved = localStorage.getItem("zimage-theme");
     if (saved === "dark" || saved === "light") {

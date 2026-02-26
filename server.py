@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 from datetime import datetime, timezone
 import html
 import io
+import inspect
 import json
 import os
 import threading
@@ -19,6 +21,14 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 import torch
+
+try:
+    from diffusers import AutoPipelineForImage2Image
+
+    DIFFUSERS_AVAILABLE = True
+except Exception:
+    AutoPipelineForImage2Image = None
+    DIFFUSERS_AVAILABLE = False
 
 from utils import AttentionBackend, ensure_model_weights, load_from_local_dir, set_attention_backend
 from zimage import generate
@@ -428,6 +438,107 @@ class ZImageService:
             return self._image_cache.get(image_id)
 
 
+def _torch_dtype_from_name(name: str) -> torch.dtype:
+    value = name.strip().lower()
+    if value in {"bf16", "bfloat16"}:
+        return torch.bfloat16
+    if value in {"fp16", "float16", "half"}:
+        return torch.float16
+    return torch.float32
+
+
+class DiffusersEditService:
+    def __init__(self) -> None:
+        self._pipeline: Any | None = None
+        self._load_error: Exception | None = None
+        self._lock = threading.Lock()
+
+        self._enabled = os.environ.get("ZIMAGE_ENABLE_DIFFUSERS_EDITS", "1") == "1"
+        self._model_id = os.environ.get("ZIMAGE_DIFFUSERS_EDIT_MODEL_ID", "Tongyi-MAI/Z-Image-Turbo")
+        self._device = os.environ.get("ZIMAGE_DIFFUSERS_EDIT_DEVICE", _select_device())
+        self._dtype = _torch_dtype_from_name(os.environ.get("ZIMAGE_DIFFUSERS_EDIT_DTYPE", "bfloat16"))
+
+    def _lazy_load(self) -> None:
+        if self._pipeline is not None:
+            return
+        if self._load_error is not None:
+            raise self._load_error
+
+        with self._lock:
+            if self._pipeline is not None:
+                return
+            if self._load_error is not None:
+                raise self._load_error
+
+            if not self._enabled:
+                self._load_error = RuntimeError("Diffusers edits are disabled by ZIMAGE_ENABLE_DIFFUSERS_EDITS=0")
+                raise self._load_error
+
+            if not DIFFUSERS_AVAILABLE or AutoPipelineForImage2Image is None:
+                self._load_error = RuntimeError(
+                    "Diffusers is not installed. Install project dependencies (pip install -e .)."
+                )
+                raise self._load_error
+
+            try:
+                pipeline = AutoPipelineForImage2Image.from_pretrained(
+                    self._model_id,
+                    torch_dtype=self._dtype,
+                )
+                pipeline.to(self._device)
+                self._pipeline = pipeline
+            except Exception as exc:
+                self._load_error = RuntimeError(f"Failed to load Diffusers image-edit pipeline: {exc}")
+                raise self._load_error
+
+    def edit_image_base64(
+        self,
+        *,
+        image_bytes: bytes,
+        prompt: str,
+        size: str,
+        num_inference_steps: int,
+        guidance_scale: float,
+        strength: float,
+        seed: int | None,
+    ) -> tuple[str, float]:
+        self._lazy_load()
+        assert self._pipeline is not None
+
+        if not prompt.strip():
+            raise ValueError("Prompt is required")
+
+        width, height = _parse_image_size(size)
+        try:
+            input_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        except UnidentifiedImageError as exc:
+            raise ValueError("Invalid image file.") from exc
+
+        input_image = input_image.resize((width, height), Image.Resampling.LANCZOS)
+
+        call_kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "image": input_image,
+            "num_inference_steps": int(num_inference_steps),
+            "guidance_scale": float(guidance_scale),
+        }
+        if seed is not None:
+            call_kwargs["generator"] = torch.Generator(self._device).manual_seed(seed)
+
+        signature = inspect.signature(self._pipeline.__call__)
+        if "strength" in signature.parameters:
+            call_kwargs["strength"] = float(strength)
+
+        started = time.perf_counter()
+        result = self._pipeline(**call_kwargs)
+        elapsed = time.perf_counter() - started
+
+        output_image = result.images[0]
+        buffer = io.BytesIO()
+        output_image.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode("utf-8"), elapsed
+
+
 class OpenAIChatMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str | list[dict[str, Any]]
@@ -494,6 +605,7 @@ class OllamaGenerateRequest(BaseModel):
 
 app = FastAPI(title="Z-Image API", version="0.1.0")
 service = ZImageService()
+diffusers_edit_service = DiffusersEditService()
 
 
 @app.exception_handler(HTTPException)
@@ -779,6 +891,7 @@ async def openai_image_edits(
     user: str | None = Form(None),
     num_inference_steps: int = Form(8),
     guidance_scale: float = Form(0.0),
+    strength: float = Form(0.6),
     seed: int | None = Form(None),
 ) -> dict[str, Any]:
     _ = model
@@ -800,7 +913,25 @@ async def openai_image_edits(
 
     edited_images: list[dict[str, str]] = []
     for _index in range(n):
-        edited_b64 = _edit_image_bytes(image_bytes=image_bytes, prompt=prompt, size=size)
+        current_seed = seed + _index if seed is not None else None
+        try:
+            edited_b64, _elapsed = await asyncio.to_thread(
+                diffusers_edit_service.edit_image_base64,
+                image_bytes=image_bytes,
+                prompt=prompt,
+                size=size,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                strength=strength,
+                seed=current_seed,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Image edit failed: {exc}") from exc
+
         if response_format == "url":
             image_id = service.cache_image_base64(edited_b64)
             edited_images.append({"url": f"{_public_base_url(request)}/v1/images/{image_id}"})
