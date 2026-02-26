@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import io
+import os
 from pathlib import Path
 import threading
 import time
@@ -44,6 +45,7 @@ class ZImageImg2ImgService:
         self._model_id = model_id
         self._device = _pick_device(device)
         self._dtype = _pick_dtype(dtype_name, self._device)
+        self._enable_slicing = os.environ.get("ZIMAGE_DIFFUSERS_EDIT_ENABLE_SLICING", "1") == "1"
         self._pipeline: ZImageImg2ImgPipeline | None = None
         self._lock = threading.Lock()
 
@@ -63,6 +65,19 @@ class ZImageImg2ImgService:
                 low_cpu_mem_usage=False,
             )
             pipeline.to(self._device)
+
+            if self._enable_slicing and self._device == "cuda":
+                try:
+                    pipeline.enable_attention_slicing()
+                except Exception:
+                    pass
+                vae_module = getattr(pipeline, "vae", None)
+                if vae_module is not None and hasattr(vae_module, "enable_slicing"):
+                    try:
+                        vae_module.enable_slicing()
+                    except Exception:
+                        pass
+
             self._pipeline = pipeline
 
     def edit_image(

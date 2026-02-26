@@ -334,9 +334,22 @@ class ZImageService:
         self._attn_backend = os.environ.get("ZIMAGE_ATTENTION", "_native_flash")
         self._model_path = os.environ.get("ZIMAGE_MODEL_PATH", "ckpts/Z-Image-Turbo")
         self._repo_id = os.environ.get("ZIMAGE_REPO_ID", "Tongyi-MAI/Z-Image-Turbo")
-        self._park_text_encoder_on_cpu = os.environ.get("ZIMAGE_PARK_TEXT_ENCODER_ON_CPU", "0") == "1"
-        self._offload_text_encoder = os.environ.get("ZIMAGE_OFFLOAD_TEXT_ENCODER", "0") == "1"
+        default_park_on_cpu = "1" if self._device == "cuda" else "0"
+        default_offload_encoder = "1" if self._device == "cuda" else "0"
+        self._park_text_encoder_on_cpu = os.environ.get("ZIMAGE_PARK_TEXT_ENCODER_ON_CPU", default_park_on_cpu) == "1"
+        self._offload_text_encoder = os.environ.get("ZIMAGE_OFFLOAD_TEXT_ENCODER", default_offload_encoder) == "1"
         self._clear_cuda_cache_per_request = os.environ.get("ZIMAGE_CLEAR_CUDA_CACHE_PER_REQUEST", "0") == "1"
+
+        if self._device == "cuda":
+            memory_fraction_raw = os.environ.get("ZIMAGE_CUDA_MEMORY_FRACTION", "").strip()
+            if memory_fraction_raw:
+                try:
+                    memory_fraction = float(memory_fraction_raw)
+                    if 0.0 < memory_fraction <= 1.0:
+                        torch.cuda.set_per_process_memory_fraction(memory_fraction)
+                except ValueError:
+                    pass
+
         self._max_cached_images = max(1, int(os.environ.get("ZIMAGE_MAX_CACHED_IMAGES", "64")))
         self._lock = threading.Lock()
         self._image_lock = threading.Lock()
@@ -501,6 +514,11 @@ class DiffusersEditService:
         if not prompt.strip():
             raise ValueError("Prompt is required")
 
+        effective_guidance_scale = float(guidance_scale)
+        allow_turbo_cfg = os.environ.get("ZIMAGE_ALLOW_TURBO_EDIT_CFG", "0") == "1"
+        if not allow_turbo_cfg and "turbo" in self._model_id.lower() and effective_guidance_scale != 0.0:
+            effective_guidance_scale = 0.0
+
         width, height = _parse_image_size(size)
         return self._service.edit_image_base64(
             image_bytes=image_bytes,
@@ -510,7 +528,7 @@ class DiffusersEditService:
             height=height,
             strength=strength,
             num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
+            guidance_scale=effective_guidance_scale,
             seed=seed,
         )
 
@@ -901,7 +919,7 @@ async def openai_image_edits(
     quality: str | None = Form(None),
     style: str | None = Form(None),
     user: str | None = Form(None),
-    num_inference_steps: int = Form(4),
+    num_inference_steps: int | None = Form(None),
     guidance_scale: float = Form(0.0),
     strength: float = Form(0.6),
     seed: int | None = Form(None),
@@ -928,6 +946,10 @@ async def openai_image_edits(
 
     image_bytes = _compose_images_for_edit(images=image_bytes_list, size=size)
 
+    default_generation_steps = int(os.environ.get("ZIMAGE_DEFAULT_NUM_INFERENCE_STEPS", "4"))
+    default_edit_steps = max(1, default_generation_steps * 2)
+    effective_num_inference_steps = num_inference_steps if num_inference_steps is not None else default_edit_steps
+
     if n < 1:
         raise HTTPException(status_code=400, detail="n must be >= 1.")
 
@@ -940,7 +962,7 @@ async def openai_image_edits(
                 image_bytes=image_bytes,
                 prompt=prompt,
                 size=size,
-                num_inference_steps=num_inference_steps,
+                num_inference_steps=effective_num_inference_steps,
                 guidance_scale=guidance_scale,
                 strength=strength,
                 seed=current_seed,

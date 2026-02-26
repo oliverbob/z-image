@@ -118,6 +118,8 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     const defaultWidth = Number(env.ZIMAGE_WIDTH ?? "512");
     const defaultSteps = Number(env.ZIMAGE_STEPS ?? "4");
     const defaultGuidance = Number(env.ZIMAGE_GUIDANCE_SCALE ?? "0.0");
+    const baseSteps = Number.isFinite(defaultSteps) ? defaultSteps : 4;
+    const defaultEditSteps = Number(env.ZIMAGE_EDIT_STEPS ?? String(baseSteps * 2));
     const defaultEditStrength = Number(env.ZIMAGE_EDIT_STRENGTH ?? "0.6");
 
     let upstream: Response;
@@ -131,7 +133,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
           "size",
           `${Number.isFinite(defaultWidth) ? defaultWidth : 512}x${Number.isFinite(defaultHeight) ? defaultHeight : 512}`,
         );
-        imageEditPayload.set("num_inference_steps", String(Number.isFinite(defaultSteps) ? defaultSteps : 4));
+        imageEditPayload.set("num_inference_steps", String(Number.isFinite(defaultEditSteps) ? defaultEditSteps : baseSteps * 2));
         imageEditPayload.set("guidance_scale", String(Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0));
         imageEditPayload.set("strength", String(Number.isFinite(defaultEditStrength) ? defaultEditStrength : 0.6));
         imageEditPayload.set("response_format", "b64_json");

@@ -99,6 +99,26 @@ def load_from_local_dir(
     """
     model_dir = Path(model_dir)
 
+    vae_dtype_name = os.environ.get("ZIMAGE_VAE_DTYPE", "auto").strip().lower()
+    if vae_dtype_name == "float32":
+        vae_dtype = torch.float32
+    elif vae_dtype_name == "float16":
+        vae_dtype = torch.float16 if device == "cuda" else torch.float32
+    elif vae_dtype_name == "bfloat16":
+        if device == "cuda" and hasattr(torch.cuda, "is_bf16_supported") and torch.cuda.is_bf16_supported():
+            vae_dtype = torch.bfloat16
+        elif device == "cpu":
+            vae_dtype = torch.float32
+        else:
+            vae_dtype = torch.float16
+    else:
+        if device == "cuda":
+            vae_dtype = torch.float16
+        elif device == "mps":
+            vae_dtype = torch.float16
+        else:
+            vae_dtype = torch.float32
+
     sys.path.insert(0, str(model_dir.parent.parent / "Z-Image" / "src"))
     from zimage.transformer import ZImageTransformer2DModel
 
@@ -164,13 +184,14 @@ def load_from_local_dir(
         mid_block_add_attention=vae_config.get("mid_block_add_attention", True),
     )
 
-    # VAE (fp32 for better precision)
+    # VAE (configurable dtype to balance quality vs VRAM)
     vae_state_dict = load_sharded_safetensors(vae_dir, device="cpu")
     vae.load_state_dict(vae_state_dict, strict=False)
     del vae_state_dict
-    vae.to(device=device, dtype=torch.float32)
+    vae.to(device=device, dtype=vae_dtype)
     vae.eval()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # Text Encoder
     if verbose:
