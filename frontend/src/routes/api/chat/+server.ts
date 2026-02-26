@@ -7,6 +7,15 @@ type IncomingChatMessage = {
   createdAt?: number;
 };
 
+const isDev = process.env.NODE_ENV !== "production";
+
+function debugUpstream(message: string) {
+  if (!isDev) {
+    return;
+  }
+  console.info(`[frontend/api/chat] ${message}`);
+}
+
 export const POST: RequestHandler = async ({ request, fetch }) => {
   try {
     const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
@@ -89,9 +98,6 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     let modelImageEditUrl: string;
     try {
       const configuredUrl = new URL(normalizedRawUrl);
-      const upstreamPath = configuredUrl.pathname.includes("/api/chat")
-        ? "/api/chat"
-        : "/v1/chat/completions";
       const protocol = configuredUrl.protocol || "http:";
       const host = configuredUrl.hostname;
       if (!host) {
@@ -104,7 +110,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         : isLoopbackHost
           ? `${protocol}//${host}:9090`
           : `${protocol}//${host}`;
-      modelChatUrl = `${baseUrl}${upstreamPath}`;
+      modelChatUrl = `${baseUrl}/v1/chat/completions`;
       modelImageEditUrl = `${baseUrl}/v1/images/edits`;
     } catch {
       return gracefulBackendReply("Invalid MODEL_CHAT_URL", configuredModelChatUrl);
@@ -114,6 +120,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     const defaultWidth = Number(env.ZIMAGE_WIDTH ?? "512");
     const defaultSteps = Number(env.ZIMAGE_STEPS ?? "4");
     const defaultGuidance = Number(env.ZIMAGE_GUIDANCE_SCALE ?? "0.0");
+    const defaultEditStrength = Number(env.ZIMAGE_EDIT_STRENGTH ?? "0.6");
 
     let upstream: Response;
     try {
@@ -126,55 +133,39 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
           "size",
           `${Number.isFinite(defaultWidth) ? defaultWidth : 512}x${Number.isFinite(defaultHeight) ? defaultHeight : 512}`,
         );
+        imageEditPayload.set("num_inference_steps", String(Number.isFinite(defaultSteps) ? defaultSteps : 4));
+        imageEditPayload.set("guidance_scale", String(Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0));
+        imageEditPayload.set("strength", String(Number.isFinite(defaultEditStrength) ? defaultEditStrength : 0.6));
         imageEditPayload.set("response_format", "b64_json");
         imageEditPayload.set("image", attachedImage, attachedImage.name || "image.png");
+
+        debugUpstream(`using image edit endpoint: ${modelImageEditUrl}`);
 
         upstream = await fetch(modelImageEditUrl, {
           method: "POST",
           body: imageEditPayload,
         });
       } else {
-        const isOllamaApi = modelChatUrl.includes("/api/chat");
+        const upstreamPayload = {
+          model: modelName,
+          messages: [
+            ...history.map((entry) => ({
+              role: entry.role,
+              content: entry.content,
+            })),
+            {
+              role: "user",
+              content: message,
+            },
+          ],
+          stream: false,
+          height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
+          width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
+          num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
+          guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
+        };
 
-        const upstreamPayload = isOllamaApi
-          ? {
-              model: modelName,
-              messages: [
-                ...history.map((entry) => ({
-                  role: entry.role,
-                  content: entry.content,
-                })),
-                {
-                  role: "user",
-                  content: message,
-                },
-              ],
-              options: {
-                height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
-                width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
-                num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
-                guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
-              },
-              stream: false,
-            }
-          : {
-              model: modelName,
-              messages: [
-                ...history.map((entry) => ({
-                  role: entry.role,
-                  content: entry.content,
-                })),
-                {
-                  role: "user",
-                  content: message,
-                },
-              ],
-              stream: false,
-              height: Number.isFinite(defaultHeight) ? defaultHeight : 512,
-              width: Number.isFinite(defaultWidth) ? defaultWidth : 512,
-              num_inference_steps: Number.isFinite(defaultSteps) ? defaultSteps : 4,
-              guidance_scale: Number.isFinite(defaultGuidance) ? defaultGuidance : 0.0,
-            };
+        debugUpstream(`using chat endpoint: ${modelChatUrl}`);
 
         upstream = await fetch(modelChatUrl, {
           method: "POST",
@@ -184,6 +175,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
           body: JSON.stringify(upstreamPayload),
         });
       }
+      debugUpstream(`upstream response status: ${upstream.status}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return gracefulBackendReply(errorMessage, attachedImage ? modelImageEditUrl : modelChatUrl);

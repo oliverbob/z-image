@@ -17,26 +17,24 @@ cp .env.example .env
 
 Set `MODEL_CHAT_URL` to your chat backend endpoint. By default, `.env.example` points to:
 
-`http://127.0.0.1:9090/api/chat`
+`http://127.0.0.1:9090/v1/chat/completions`
 
-The local frontend API route supports either:
+The local frontend API route uses OpenAI-compatible endpoints on the same backend base URL:
 
-- simple backend shape:
+- text-to-image/chat:
 
-```json
-{
-  "message": "string",
-  "history": [{ "role": "user|assistant", "content": "string" }]
-}
-```
+`POST /v1/chat/completions`
 
-- or Ollama-like backend shape (`/api/chat`) with image data.
+- image-to-image edits (when user attaches an image):
 
-Simple shape returns:
+`POST /v1/images/edits`
+
+The frontend route still receives:
 
 ```json
 {
-  "reply": "string"
+  "reply": "string",
+  "imageUrl": "string|null"
 }
 ```
 
