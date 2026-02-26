@@ -108,6 +108,11 @@
     error = "";
     clearSelectedImage();
     resetComposerHeight();
+
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches) {
+      drawerOpen = false;
+    }
+
     await tick();
     scrollConversationToBottom();
   }

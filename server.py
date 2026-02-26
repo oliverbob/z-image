@@ -928,7 +928,15 @@ async def openai_image_edits(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            try:
+                edited_b64 = _edit_image_bytes(image_bytes=image_bytes, prompt=prompt, size=size)
+            except HTTPException:
+                raise
+            except Exception as fallback_exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Diffusers unavailable ({exc}); local fallback failed: {fallback_exc}",
+                ) from fallback_exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Image edit failed: {exc}") from exc
 
