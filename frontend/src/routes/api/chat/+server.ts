@@ -57,7 +57,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       return json({ error: "Message or image is required" }, { status: 400 });
     }
 
-    const configuredModelChatUrl = env.MODEL_CHAT_URL?.trim();
+    const configuredModelChatUrl = env.MODEL_CHAT_URL?.trim() || "http://127.0.0.1:9090/";
 
     const toTargetPath = (target?: string) => {
       if (!target) {
@@ -83,38 +83,22 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       });
     };
 
-    if (!configuredModelChatUrl) {
-      if (attachedImage) {
-        return gracefulBackendReply("MODEL_CHAT_URL is not configured");
-      }
-      return json({ reply: `Echo: ${message}` });
-    }
-
-    const normalizedRawUrl = /^(https?:)?\/\//i.test(configuredModelChatUrl)
-      ? configuredModelChatUrl
-      : `http://${configuredModelChatUrl}`;
+    const normalizedRawUrl = configuredModelChatUrl;
 
     let modelChatUrl: string;
     let modelImageEditUrl: string;
     try {
-      const configuredUrl = new URL(normalizedRawUrl);
-      const protocol = configuredUrl.protocol || "http:";
-      const host = configuredUrl.hostname;
-      if (!host) {
-        return gracefulBackendReply("MODEL_CHAT_URL must include a valid host", configuredModelChatUrl);
-      }
-      const isLoopbackHost = host === "localhost" || host === "127.0.0.1";
-      const hasExplicitPort = configuredUrl.port.length > 0;
-      const baseUrl = hasExplicitPort
-        ? `${protocol}//${host}:${configuredUrl.port}`
-        : isLoopbackHost
-          ? `${protocol}//${host}:9090`
-          : `${protocol}//${host}`;
-      modelChatUrl = `${baseUrl}/v1/chat/completions`;
-      modelImageEditUrl = `${baseUrl}/v1/images/edits`;
+      const requestOrigin = new URL(request.url).origin;
+      const configuredUrl = new URL(normalizedRawUrl, requestOrigin);
+      const basePath = configuredUrl.pathname.endsWith("/") ? configuredUrl.pathname : `${configuredUrl.pathname}/`;
+      const apiBase = new URL(basePath, configuredUrl.origin);
+
+      modelChatUrl = new URL("v1/chat/completions", apiBase).toString();
+      modelImageEditUrl = new URL("v1/images/edits", apiBase).toString();
     } catch {
       return gracefulBackendReply("Invalid MODEL_CHAT_URL", configuredModelChatUrl);
     }
+
     const modelName = env.MODEL_NAME?.trim() || "Z-image-turbo";
     const defaultHeight = Number(env.ZIMAGE_HEIGHT ?? "512");
     const defaultWidth = Number(env.ZIMAGE_WIDTH ?? "512");
@@ -140,7 +124,6 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         imageEditPayload.set("image", attachedImage, attachedImage.name || "image.png");
 
         debugUpstream(`using image edit endpoint: ${modelImageEditUrl}`);
-
         upstream = await fetch(modelImageEditUrl, {
           method: "POST",
           body: imageEditPayload,
@@ -166,7 +149,6 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         };
 
         debugUpstream(`using chat endpoint: ${modelChatUrl}`);
-
         upstream = await fetch(modelChatUrl, {
           method: "POST",
           headers: {
@@ -175,6 +157,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
           body: JSON.stringify(upstreamPayload),
         });
       }
+
       debugUpstream(`upstream response status: ${upstream.status}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -232,13 +215,13 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
           ? data.choices[0].message.content
           : typeof openaiTextFromBlocks === "string" && openaiTextFromBlocks.length > 0
             ? openaiTextFromBlocks
-          : typeof data?.message?.content === "string"
-            ? data.message.content
-            : typeof data?.response === "string"
-              ? data.response
-              : attachedImage
-                ? "Image generation completed."
-                : JSON.stringify(data);
+            : typeof data?.message?.content === "string"
+              ? data.message.content
+              : typeof data?.response === "string"
+                ? data.response
+                : attachedImage
+                  ? "Image generation completed."
+                  : JSON.stringify(data);
 
     const imageBase64 =
       typeof data?.message?.images?.[0] === "string"
@@ -247,7 +230,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
           ? data.images[0]
           : typeof data?.data?.[0]?.b64_json === "string"
             ? data.data[0].b64_json
-          : null;
+            : null;
 
     const imageUrlFromOpenAIBlocks =
       openaiImageUrlFromBlocks && typeof (openaiImageUrlFromBlocks as { image_url?: { url?: unknown } }).image_url?.url === "string"
@@ -260,9 +243,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
         : `data:image/png;base64,${imageBase64}`
       : typeof imageUrlFromOpenAIBlocks === "string"
         ? imageUrlFromOpenAIBlocks
-      : typeof data?.data?.[0]?.url === "string"
-        ? data.data[0].url
-      : null;
+        : typeof data?.data?.[0]?.url === "string"
+          ? data.data[0].url
+          : null;
 
     return json({ reply, imageUrl });
   } catch (error) {
