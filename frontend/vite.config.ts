@@ -21,6 +21,7 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       proxy: {
         "/v1": { target: backendTarget, changeOrigin: true },
+        "/api/chat": { target: backendTarget, changeOrigin: true },
         "/api/generate": { target: backendTarget, changeOrigin: true },
         "/api/tags": { target: backendTarget, changeOrigin: true },
         "/api/show": { target: backendTarget, changeOrigin: true },
